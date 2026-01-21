@@ -27,7 +27,10 @@ class GameRoom extends Room<State> {
 
 // 3. Der Server (Das technische Grundgerüst)
 const port = 3000;
-const server = http.createServer();
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end("Barrack Brawl Server ist ONLINE!");
+});
 const gameServer = new Server({
     server: server,
 });
