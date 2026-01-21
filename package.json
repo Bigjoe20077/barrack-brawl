@@ -1,31 +1,18 @@
 {
   "name": "barrack-brawl",
   "version": "1.0.0",
-  "description": "Hallo",
-  "main": "index.js",
+  "description": "Multiplayer Game Server",
+  "main": "index.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "ts-node index.ts"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Bigjoe20077/barrack-brawl.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/Bigjoe20077/barrack-brawl/issues"
-  },
-  "homepage": "https://github.com/Bigjoe20077/barrack-brawl#readme",
   "dependencies": {
-    "@colyseus/schema": "^3.0.76",
-    "colyseus": "^0.16.5",
-    "schema": "^0.2.1"
+    "colyseus": "^0.15.0",
+    "@colyseus/schema": "^2.0.0"
   },
   "devDependencies": {
-    "@types/node": "^25.0.9",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^20.0.0"
   }
 }
