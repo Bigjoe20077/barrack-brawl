@@ -5,6 +5,7 @@ const MapSchema = schema.MapSchema;
 const type = schema.type;
 import http from "http";
 
+// 1. UNIT KLASSE ERWEITERT (HP, Damage, MaxHP)
 class Unit extends Schema {
     @type("string") id = "";
     @type("string") type = "";
@@ -12,7 +13,15 @@ class Unit extends Schema {
     @type("number") z = 0;
     @type("string") ownerId = "";
     @type("number") speed = 0.1;
+    
+    // Neue Stats für Kampf
+    @type("number") hp = 100;
+    @type("number") maxHp = 100;
+    @type("number") damage = 10;
+    @type("number") attackRange = 1.5;
+    @type("boolean") isFighting = false; // Für Animationen (später)
 }
+
 class Building extends Schema {
     @type("string") id = "";
     @type("string") type = "empty";
@@ -22,9 +31,11 @@ class Building extends Schema {
     @type("number") spawnTimer = 0;
     @type("number") spawnInterval = 3000;
 }
+
 class PlayerState extends Schema {
     @type("number") gold = 250;
 }
+
 class State extends Schema {
     @type({ map: Unit }) units = new MapSchema();
     @type({ map: Building }) buildings = new MapSchema();
@@ -34,36 +45,50 @@ class State extends Schema {
 class GameRoom extends Room {
     onCreate (options) {
         this.setState(new State());
+
         this.onMessage("upgradeBuilding", (client, data) => {
             const building = this.state.buildings.get(data.buildingId);
             const player = this.state.players.get(client.sessionId);
+            
             if (building && player && building.ownerId === client.sessionId) {
                 let cost = 0;
+                // Balancing Werte
                 if (data.newType === "rekrut") cost = 50;
                 if (data.newType === "bogenschuetze") cost = 100;
                 if (data.newType === "ritter") cost = 150;
                 if (data.newType === "magier") cost = 250;
+
                 if (player.gold >= cost) {
                     player.gold -= cost;
                     building.type = data.newType;
                 }
             }
         });
+
+        // Loop läuft 20 Mal pro Sekunde (50ms)
         this.setSimulationInterval((deltaTime) => this.update(deltaTime), 50);
     }
+
     onJoin (client) {
         this.state.players.set(client.sessionId, new PlayerState());
+        // Einfache Logik: Erster Spieler links (-10), zweiter rechts (10)
         const zPos = (this.state.players.size === 1) ? -10 : 10;
         this.createBuildingSlots(client.sessionId, zPos);
     }
+
     createBuildingSlots(ownerId, zPos) {
         let b1 = new Building(); b1.id = ownerId + "_slot_1"; b1.x = -4; b1.z = zPos; b1.ownerId = ownerId;
         this.state.buildings.set(b1.id, b1);
+        
         let b2 = new Building(); b2.id = ownerId + "_slot_2"; b2.x = 4; b2.z = zPos; b2.ownerId = ownerId;
         this.state.buildings.set(b2.id, b2);
     }
+
     update(deltaTime) {
+        // Gold Einkommen
         if (Date.now() % 1000 < 60) this.state.players.forEach(p => p.gold += 5);
+
+        // 1. SPAWNING
         this.state.buildings.forEach((building) => {
             if (building.type === "empty") return;
             building.spawnTimer += deltaTime;
@@ -72,24 +97,72 @@ class GameRoom extends Room {
                 building.spawnTimer = 0;
             }
         });
+
+        // 2. KAMPF & BEWEGUNG
+        // Wir iterieren über alle Einheiten
         this.state.units.forEach((unit) => {
-            if (unit.z < -1) unit.z += unit.speed;
-            else if (unit.z > 1) unit.z -= unit.speed;
+            let enemyFound = null;
+
+            // Suche nach Gegnern in Reichweite
+            this.state.units.forEach((target) => {
+                if (unit.ownerId !== target.ownerId) {
+                    // Einfache Distanzberechnung (nur Z-Achse relevant für Lanes, aber wir nehmen Distanz)
+                    let dx = unit.x - target.x;
+                    let dz = unit.z - target.z;
+                    let dist = Math.sqrt(dx*dx + dz*dz);
+
+                    if (dist <= unit.attackRange) {
+                        enemyFound = target;
+                    }
+                }
+            });
+
+            if (enemyFound) {
+                // KAMPF MODUS
+                unit.isFighting = true;
+                // Schaden austeilen (Simpel: Schaden pro Tick / 20, damit sie nicht sofort platzen)
+                enemyFound.hp -= (unit.damage * (deltaTime / 1000));
+                
+                // Wenn Gegner tot -> Löschen
+                if (enemyFound.hp <= 0) {
+                    this.state.units.delete(enemyFound.id);
+                }
+
+            } else {
+                // LAUF MODUS (Nur wenn kein Gegner da ist)
+                unit.isFighting = false;
+
+                // Richtung bestimmen: Einheiten laufen immer zur 0 (Mitte) oder zum Gegner?
+                // Aktuell: Player 1 (z=-10) läuft nach +z, Player 2 (z=10) läuft nach -z
+                // Wir vereinfachen: Sie laufen immer Richtung Z=0. 
+                // Aber eigentlich wollen sie zur gegnerischen Basis.
+                
+                if (unit.z < -1) unit.z += unit.speed;      // Team unten läuft hoch
+                else if (unit.z > 1) unit.z -= unit.speed;  // Team oben läuft runter
+                // Wenn sie zwischen -1 und 1 sind (Mitte), treffen sie sich gleich
+            }
         });
     }
+
     spawnUnit(building) {
         const unit = new Unit();
         unit.id = "u_" + Date.now() + "_" + Math.random();
         unit.type = building.type;
         unit.x = building.x;
+        // Spawn etwas vor dem Gebäude, damit sie nicht drin stecken
         unit.z = (building.z < 0) ? building.z + 2 : building.z - 2;
         unit.ownerId = building.ownerId;
-        if (unit.type === "ritter") unit.speed = 0.05;
-        else if (unit.type === "magier") unit.speed = 0.04;
-        else unit.speed = 0.1;
+
+        // Stats setzen (Balancing)
+        if (unit.type === "rekrut") { unit.hp = 100; unit.damage = 10; unit.speed = 0.1; }
+        if (unit.type === "bogenschuetze") { unit.hp = 60; unit.damage = 20; unit.speed = 0.1; unit.attackRange = 4; } // Fernkampf
+        if (unit.type === "ritter") { unit.hp = 250; unit.damage = 15; unit.speed = 0.05; } // Tank
+        if (unit.type === "magier") { unit.hp = 80; unit.damage = 40; unit.speed = 0.08; unit.attackRange = 3; }
+
         this.state.units.set(unit.id, unit);
     }
 }
+
 const port = 3000;
 const server = http.createServer((req, res) => { res.writeHead(200); res.end("Server Online"); });
 const gameServer = new Server({ server: server });
