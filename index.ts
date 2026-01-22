@@ -84,8 +84,7 @@ class GameRoom extends Room {
         this.state.buildings.set(b2.id, b2);
     }
 
-    update(deltaTime) {
-        // Gold Einkommen
+   update(deltaTime) {
         if (Date.now() % 1000 < 60) this.state.players.forEach(p => p.gold += 5);
 
         // 1. SPAWNING
@@ -98,50 +97,64 @@ class GameRoom extends Room {
             }
         });
 
-        // 2. KAMPF & BEWEGUNG
-        // Wir iterieren über alle Einheiten
+        // 2. LOGIK LOOP
         this.state.units.forEach((unit) => {
             let enemyFound = null;
 
-            // Suche nach Gegnern in Reichweite
-            this.state.units.forEach((target) => {
-                if (unit.ownerId !== target.ownerId) {
-                    // Einfache Distanzberechnung (nur Z-Achse relevant für Lanes, aber wir nehmen Distanz)
-                    let dx = unit.x - target.x;
-                    let dz = unit.z - target.z;
-                    let dist = Math.sqrt(dx*dx + dz*dz);
+            // A. GEGNER SUCHE & KOLLISIONS-VERMEIDUNG (Separation)
+            this.state.units.forEach((other) => {
+                if (unit === other) return; // Nicht mit sich selbst prüfen
 
+                let dx = unit.x - other.x;
+                let dz = unit.z - other.z;
+                let dist = Math.sqrt(dx*dx + dz*dz);
+
+                // Separation: Wenn zu nah an FREUND, leicht wegdrücken
+                if (unit.ownerId === other.ownerId) {
+                    if (dist < 0.8) { // 0.8 ist der Mindestabstand
+                        let pushForce = 0.05; // Wie stark sie drängeln
+                        if (dist > 0) {
+                            unit.x += (dx / dist) * pushForce;
+                            unit.z += (dz / dist) * pushForce;
+                        } else {
+                            // Wenn exakt gleiche Position, zufällig schubsen
+                            unit.x += (Math.random() - 0.5) * pushForce;
+                            unit.z += (Math.random() - 0.5) * pushForce;
+                        }
+                    }
+                } 
+                // Kampf: Wenn GEGNER in Reichweite
+                else {
                     if (dist <= unit.attackRange) {
-                        enemyFound = target;
+                        enemyFound = other;
                     }
                 }
             });
 
+            // B. KAMPF oder BEWEGUNG
             if (enemyFound) {
-                // KAMPF MODUS
                 unit.isFighting = true;
-                // Schaden austeilen (Simpel: Schaden pro Tick / 20, damit sie nicht sofort platzen)
+                // Schaden austeilen
                 enemyFound.hp -= (unit.damage * (deltaTime / 1000));
                 
-                // Wenn Gegner tot -> Löschen
                 if (enemyFound.hp <= 0) {
+                    console.log(`Unit ${enemyFound.id} died!`); // Server Log Check
                     this.state.units.delete(enemyFound.id);
                 }
-
             } else {
-                // LAUF MODUS (Nur wenn kein Gegner da ist)
                 unit.isFighting = false;
-
-                // Richtung bestimmen: Einheiten laufen immer zur 0 (Mitte) oder zum Gegner?
-                // Aktuell: Player 1 (z=-10) läuft nach +z, Player 2 (z=10) läuft nach -z
-                // Wir vereinfachen: Sie laufen immer Richtung Z=0. 
-                // Aber eigentlich wollen sie zur gegnerischen Basis.
                 
-                if (unit.z < -1) unit.z += unit.speed;      // Team unten läuft hoch
-                else if (unit.z > 1) unit.z -= unit.speed;  // Team oben läuft runter
-                // Wenn sie zwischen -1 und 1 sind (Mitte), treffen sie sich gleich
+                // Einfache Bewegung zur Mitte (oder Gegnerseite)
+                // Wir addieren minimale Separation, damit sie nicht schnurgerade laufen
+                if (unit.z < -0.5) unit.z += unit.speed;
+                else if (unit.z > 0.5) unit.z -= unit.speed;
             }
+            
+            // C. WORLD BOUNDS (Damit sie durch das Schubsen nicht von der Map fallen)
+            if (unit.x < -6) unit.x = -6;
+            if (unit.x > 6) unit.x = 6;
         });
+    }
     }
 
     spawnUnit(building) {
