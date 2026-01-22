@@ -6,7 +6,7 @@ import http from "http";
 
 class Unit extends Schema {
     @type("string") id: string = "";
-    @type("string") type: string = ""; // "rekrut", "ritter", "bogenschuetze"
+    @type("string") type: string = ""; // "rekrut", "ritter", "bogenschuetze", "magier"
     @type("number") x: number = 0;
     @type("number") z: number = 0;
     @type("string") ownerId: string = "";
@@ -15,16 +15,16 @@ class Unit extends Schema {
 
 class Building extends Schema {
     @type("string") id: string = "";
-    @type("string") type: string = "empty"; // Startet als leerer Bauplatz
+    @type("string") type: string = "empty"; // Startet leer
     @type("number") x: number = 0;
     @type("number") z: number = 0;
     @type("string") ownerId: string = "";
     @type("number") spawnTimer: number = 0;
-    @type("number") spawnInterval: number = 3000; // Standard: 3 Sek
+    @type("number") spawnInterval: number = 3000; // Alle 3 Sekunden
 }
 
 class PlayerState extends Schema {
-    @type("number") gold: number = 100; // Startgold
+    @type("number") gold: number = 250; // Etwas Startgold zum Testen
 }
 
 class State extends Schema {
@@ -40,27 +40,27 @@ class GameRoom extends Room<State> {
 
     onCreate (options: any) {
         this.setState(new State());
-        console.log("Lane Wars Modus gestartet!");
+        console.log("Pocket Castle Wars Server gestartet!");
 
-        // BEFEHL: Upgrade durchführen
+        // --- UPGRADE HANDLER ---
         this.onMessage("upgradeBuilding", (client, data) => {
-            // data = { buildingId: "...", newType: "ritter" }
             const building = this.state.buildings.get(data.buildingId);
             const player = this.state.players.get(client.sessionId);
 
-            // Sicherheitschecks
             if (building && player && building.ownerId === client.sessionId) {
                 
-                // KOSTEN-LOGIK (Beispiel)
+                // PREISLISTE
                 let cost = 0;
                 if (data.newType === "rekrut") cost = 50;
                 if (data.newType === "bogenschuetze") cost = 100;
                 if (data.newType === "ritter") cost = 150;
+                if (data.newType === "magier") cost = 250;
 
+                // KAUFEN
                 if (player.gold >= cost) {
-                    player.gold -= cost;           // Bezahlen
-                    building.type = data.newType;  // Bauen
-                    console.log("Upgrade erfolgreich:", data.newType);
+                    player.gold -= cost;
+                    building.type = data.newType; 
+                    console.log(`Upgrade auf ${data.newType} durchgeführt.`);
                 }
             }
         });
@@ -69,43 +69,37 @@ class GameRoom extends Room<State> {
     }
 
     onJoin (client: Client) {
-        console.log(client.sessionId, "beigetreten");
-        
-        // 1. Spieler-Status erstellen (Gold)
         this.state.players.set(client.sessionId, new PlayerState());
-
-        // 2. Fest vorgegebene Gebäude zuweisen (Die "Lanes")
-        // Wir erstellen einfach mal 2 Bauplätze pro Spieler
-        this.createBuildingSlots(client.sessionId, -10); // Spieler 1 (unten)
+        
+        // Erstelle 2 Bauplätze pro Spieler (Position abhängig von ID)
+        // Einfacher Hack: Erster Spieler Z=-10, Zweiter Z=10
+        const zPos = (this.state.players.size === 1) ? -10 : 10;
+        this.createBuildingSlots(client.sessionId, zPos);
     }
 
     createBuildingSlots(ownerId: string, zPos: number) {
-        // Linker Slot
+        // Slot 1 (Links)
         let b1 = new Building();
         b1.id = ownerId + "_slot_1";
-        b1.x = -4; 
-        b1.z = zPos;
-        b1.ownerId = ownerId;
+        b1.x = -4; b1.z = zPos; b1.ownerId = ownerId;
         this.state.buildings.set(b1.id, b1);
 
-        // Rechter Slot
+        // Slot 2 (Rechts)
         let b2 = new Building();
         b2.id = ownerId + "_slot_2";
-        b2.x = 4;
-        b2.z = zPos;
-        b2.ownerId = ownerId;
+        b2.x = 4; b2.z = zPos; b2.ownerId = ownerId;
         this.state.buildings.set(b2.id, b2);
     }
 
     update(deltaTime: number) {
-        // 1. Gold Einkommen (alle 1 Sekunde +1 Gold)
-        if (Date.now() % 1000 < 50) { // Einfacher Trick für 1 Sekunde
-            this.state.players.forEach(p => p.gold += 1);
+        // 1. Passives Einkommen (alle ~1 Sekunde)
+        if (Date.now() % 1000 < 60) {
+            this.state.players.forEach(p => p.gold += 5); // 5 Gold pro Sekunde
         }
 
         // 2. Gebäude Spawning
         this.state.buildings.forEach((building) => {
-            if (building.type === "empty") return; // Leere Slots tun nichts
+            if (building.type === "empty") return;
 
             building.spawnTimer += deltaTime;
             if (building.spawnTimer >= building.spawnInterval) {
@@ -114,12 +108,14 @@ class GameRoom extends Room<State> {
             }
         });
 
-        // 3. Einheiten laufen
+        // 3. Einheiten Bewegung (Automatisch zur Mitte / zum Gegner)
         this.state.units.forEach((unit) => {
-            // Primitive KI: Laufe zur Mitte (Z=0) und dann zum Gegner
-            // Hier vereinfacht: Laufe immer Richtung Z=0
-            if (unit.z < 0) unit.z += unit.speed; // Team Unten läuft hoch
-            if (unit.z > 0) unit.z -= unit.speed; // Team Oben läuft runter
+            // Logik: Wenn ich unten starte (Z < 0), laufe nach oben (+). Sonst umgekehrt.
+            // Wir speichern die Startrichtung basierend auf dem Owner später besser, 
+            // aber für jetzt reicht die Position.
+            if (unit.z < -1) unit.z += unit.speed;      // Team Unten läuft hoch
+            else if (unit.z > 1) unit.z -= unit.speed;  // Team Oben läuft runter
+            // (Zwischen -1 und 1 ist die Kampfzone, da bleiben sie stehen -> später Kampflogik)
         });
     }
 
@@ -128,12 +124,14 @@ class GameRoom extends Room<State> {
         unit.id = "u_" + Date.now() + "_" + Math.random();
         unit.type = building.type;
         unit.x = building.x;
-        unit.z = building.z + 1.5; // Kommt aus dem Gebäude raus
+        // Spawnt leicht versetzt vor dem Gebäude, damit sie nicht drin stecken
+        unit.z = (building.z < 0) ? building.z + 2 : building.z - 2; 
         unit.ownerId = building.ownerId;
         
-        // Werte basierend auf Typ
-        if (unit.type === "ritter") unit.speed = 0.05; // Langsam
-        else unit.speed = 0.1; // Normal
+        // GESCHWINDIGKEITEN
+        if (unit.type === "ritter") unit.speed = 0.05; // Tank (Langsam)
+        else if (unit.type === "magier") unit.speed = 0.04; // Magier (Sehr Langsam)
+        else unit.speed = 0.1; // Rekrut & Archer (Normal)
 
         this.state.units.set(unit.id, unit);
     }
@@ -142,9 +140,8 @@ class GameRoom extends Room<State> {
 const port = 3000;
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end("Lane Wars Server Online");
+    res.end("Pocket Castle Wars Server Online");
 });
-
 const gameServer = new Server({ server: server });
 gameServer.define("battle", GameRoom);
 gameServer.listen(port);
