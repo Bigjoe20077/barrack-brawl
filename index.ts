@@ -5,21 +5,22 @@ const MapSchema = schema.MapSchema;
 const type = schema.type;
 import http from "http";
 
-// 1. UNIT KLASSE ERWEITERT (HP, Damage, MaxHP)
+// --- 1. DATEN STRUKTUREN ---
+
 class Unit extends Schema {
     @type("string") id = "";
     @type("string") type = "";
     @type("number") x = 0;
     @type("number") z = 0;
     @type("string") ownerId = "";
-    @type("number") speed = 0.1;
     
-    // Neue Stats für Kampf
+    // Stats (WICHTIG: Das hat gefehlt!)
+    @type("number") speed = 0.1;
     @type("number") hp = 100;
     @type("number") maxHp = 100;
     @type("number") damage = 10;
     @type("number") attackRange = 1.5;
-    @type("boolean") isFighting = false; // Für Animationen (später)
+    @type("boolean") isFighting = false;
 }
 
 class Building extends Schema {
@@ -42,17 +43,20 @@ class State extends Schema {
     @type({ map: PlayerState }) players = new MapSchema();
 }
 
+// --- 2. SPIEL LOGIK ---
+
 class GameRoom extends Room {
     onCreate (options) {
         this.setState(new State());
 
+        // Listener: Gebäude Upgrade / Bauen
         this.onMessage("upgradeBuilding", (client, data) => {
             const building = this.state.buildings.get(data.buildingId);
             const player = this.state.players.get(client.sessionId);
             
             if (building && player && building.ownerId === client.sessionId) {
                 let cost = 0;
-                // Balancing Werte
+                // Balancing
                 if (data.newType === "rekrut") cost = 50;
                 if (data.newType === "bogenschuetze") cost = 100;
                 if (data.newType === "ritter") cost = 150;
@@ -65,31 +69,45 @@ class GameRoom extends Room {
             }
         });
 
-        // Loop läuft 20 Mal pro Sekunde (50ms)
+        // Game Loop (20 FPS / alle 50ms)
         this.setSimulationInterval((deltaTime) => this.update(deltaTime), 50);
     }
 
     onJoin (client) {
         this.state.players.set(client.sessionId, new PlayerState());
-        // Einfache Logik: Erster Spieler links (-10), zweiter rechts (10)
+        
+        // Zuweisung der Seite (Oben oder Unten)
         const zPos = (this.state.players.size === 1) ? -10 : 10;
         this.createBuildingSlots(client.sessionId, zPos);
+        console.log(`Spieler ${client.sessionId} beigetreten. Seite: ${zPos}`);
     }
 
     createBuildingSlots(ownerId, zPos) {
-        let b1 = new Building(); b1.id = ownerId + "_slot_1"; b1.x = -4; b1.z = zPos; b1.ownerId = ownerId;
+        // Slot 1
+        let b1 = new Building(); 
+        b1.id = ownerId + "_slot_1"; 
+        b1.x = -4; 
+        b1.z = zPos; 
+        b1.ownerId = ownerId;
         this.state.buildings.set(b1.id, b1);
         
-        let b2 = new Building(); b2.id = ownerId + "_slot_2"; b2.x = 4; b2.z = zPos; b2.ownerId = ownerId;
+        // Slot 2
+        let b2 = new Building(); 
+        b2.id = ownerId + "_slot_2"; 
+        b2.x = 4; 
+        b2.z = zPos; 
+        b2.ownerId = ownerId;
         this.state.buildings.set(b2.id, b2);
     }
 
-   update(deltaTime) {
+    update(deltaTime) {
+        // Gold Einkommen (jede Sekunde ca. 5 Gold)
         if (Date.now() % 1000 < 60) this.state.players.forEach(p => p.gold += 5);
 
-        // 1. SPAWNING
+        // A. SPAWNING
         this.state.buildings.forEach((building) => {
             if (building.type === "empty") return;
+            
             building.spawnTimer += deltaTime;
             if (building.spawnTimer >= building.spawnInterval) {
                 this.spawnUnit(building);
@@ -97,33 +115,33 @@ class GameRoom extends Room {
             }
         });
 
-        // 2. LOGIK LOOP
+        // B. EINHEITEN LOGIK
         this.state.units.forEach((unit) => {
             let enemyFound = null;
 
-            // A. GEGNER SUCHE & KOLLISIONS-VERMEIDUNG (Separation)
+            // 1. Gegner suchen & Kollisions-Vermeidung (Soft Collision)
             this.state.units.forEach((other) => {
-                if (unit === other) return; // Nicht mit sich selbst prüfen
+                if (unit === other) return; // Nicht selbst prüfen
 
                 let dx = unit.x - other.x;
                 let dz = unit.z - other.z;
                 let dist = Math.sqrt(dx*dx + dz*dz);
 
-                // Separation: Wenn zu nah an FREUND, leicht wegdrücken
+                // Wenn gleiches Team -> Wegschubsen (damit sie nicht stapeln)
                 if (unit.ownerId === other.ownerId) {
-                    if (dist < 0.8) { // 0.8 ist der Mindestabstand
-                        let pushForce = 0.05; // Wie stark sie drängeln
+                    if (dist < 0.8) { 
+                        let pushForce = 0.05; 
                         if (dist > 0) {
                             unit.x += (dx / dist) * pushForce;
                             unit.z += (dz / dist) * pushForce;
                         } else {
-                            // Wenn exakt gleiche Position, zufällig schubsen
+                            // Zufallsschubs bei exakter Überlappung
                             unit.x += (Math.random() - 0.5) * pushForce;
                             unit.z += (Math.random() - 0.5) * pushForce;
                         }
                     }
                 } 
-                // Kampf: Wenn GEGNER in Reichweite
+                // Wenn Gegner -> Prüfen ob in Reichweite
                 else {
                     if (dist <= unit.attackRange) {
                         enemyFound = other;
@@ -131,30 +149,30 @@ class GameRoom extends Room {
                 }
             });
 
-            // B. KAMPF oder BEWEGUNG
+            // 2. Aktion ausführen
             if (enemyFound) {
+                // KAMPF
                 unit.isFighting = true;
-                // Schaden austeilen
+                // Schaden berechnen (angepasst an DeltaTime)
                 enemyFound.hp -= (unit.damage * (deltaTime / 1000));
                 
+                // Tod prüfen
                 if (enemyFound.hp <= 0) {
-                    console.log(`Unit ${enemyFound.id} died!`); // Server Log Check
                     this.state.units.delete(enemyFound.id);
                 }
             } else {
+                // BEWEGUNG
                 unit.isFighting = false;
                 
-                // Einfache Bewegung zur Mitte (oder Gegnerseite)
-                // Wir addieren minimale Separation, damit sie nicht schnurgerade laufen
+                // Laufen zur Mitte (0)
                 if (unit.z < -0.5) unit.z += unit.speed;
                 else if (unit.z > 0.5) unit.z -= unit.speed;
             }
-            
-            // C. WORLD BOUNDS (Damit sie durch das Schubsen nicht von der Map fallen)
+
+            // 3. Map Grenzen (damit sie nicht rausgeschubst werden)
             if (unit.x < -6) unit.x = -6;
             if (unit.x > 6) unit.x = 6;
         });
-    }
     }
 
     spawnUnit(building) {
@@ -162,22 +180,30 @@ class GameRoom extends Room {
         unit.id = "u_" + Date.now() + "_" + Math.random();
         unit.type = building.type;
         unit.x = building.x;
-        // Spawn etwas vor dem Gebäude, damit sie nicht drin stecken
+        // Spawne leicht vor dem Gebäude
         unit.z = (building.z < 0) ? building.z + 2 : building.z - 2;
         unit.ownerId = building.ownerId;
 
-        // Stats setzen (Balancing)
-        if (unit.type === "rekrut") { unit.hp = 100; unit.damage = 10; unit.speed = 0.1; }
-        if (unit.type === "bogenschuetze") { unit.hp = 60; unit.damage = 20; unit.speed = 0.1; unit.attackRange = 4; } // Fernkampf
-        if (unit.type === "ritter") { unit.hp = 250; unit.damage = 15; unit.speed = 0.05; } // Tank
-        if (unit.type === "magier") { unit.hp = 80; unit.damage = 40; unit.speed = 0.08; unit.attackRange = 3; }
+        // Stats setzen
+        if (unit.type === "rekrut") { 
+            unit.maxHp = 100; unit.hp = 100; unit.damage = 10; unit.speed = 0.1; 
+        } else if (unit.type === "bogenschuetze") { 
+            unit.maxHp = 60; unit.hp = 60; unit.damage = 20; unit.speed = 0.1; unit.attackRange = 4; 
+        } else if (unit.type === "ritter") { 
+            unit.maxHp = 250; unit.hp = 250; unit.damage = 15; unit.speed = 0.05; 
+        } else if (unit.type === "magier") { 
+            unit.maxHp = 80; unit.hp = 80; unit.damage = 40; unit.speed = 0.08; unit.attackRange = 3; 
+        }
 
         this.state.units.set(unit.id, unit);
     }
 }
 
+// --- 3. SERVER START ---
 const port = 3000;
 const server = http.createServer((req, res) => { res.writeHead(200); res.end("Server Online"); });
 const gameServer = new Server({ server: server });
+
 gameServer.define("battle", GameRoom);
 gameServer.listen(port);
+console.log(`Battle Server listening on port ${port}`);
