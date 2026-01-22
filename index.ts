@@ -19,6 +19,9 @@ class Unit extends Schema {
     @type("number") damage = 10;
     @type("number") attackRange = 1.5;
     @type("boolean") isFighting = false;
+    
+    // NEU: Richtung (-1 oder 1)
+    @type("number") direction = 1; 
 }
 
 class Building extends Schema {
@@ -33,8 +36,8 @@ class Building extends Schema {
 
 class PlayerState extends Schema {
     @type("number") gold = 250;
-    @type("number") health = 100; // NEU: Lebenspunkte der Burg
-    @type("number") baseZ = 0;    // NEU: Wo steht seine Burg?
+    @type("number") health = 100;
+    @type("number") baseZ = 0;
 }
 
 class State extends Schema {
@@ -73,13 +76,9 @@ class GameRoom extends Room {
     onJoin (client) {
         let player = new PlayerState();
         this.state.players.set(client.sessionId, player);
-        
-        // Seite zuweisen
         const zPos = (this.state.players.size === 1) ? -10 : 10;
-        player.baseZ = zPos; // Speichern, wo der Spieler wohnt
-
+        player.baseZ = zPos; 
         this.createBuildingSlots(client.sessionId, zPos);
-        console.log(`Spieler ${client.sessionId} auf Seite ${zPos}`);
     }
 
     createBuildingSlots(ownerId, zPos) {
@@ -90,10 +89,9 @@ class GameRoom extends Room {
     }
 
     update(deltaTime) {
-        // Gold
         if (Date.now() % 1000 < 60) this.state.players.forEach(p => p.gold += 5);
 
-        // A. SPAWNING
+        // SPAWNING
         this.state.buildings.forEach((building) => {
             if (building.type === "empty") return;
             building.spawnTimer += deltaTime;
@@ -103,58 +101,93 @@ class GameRoom extends Room {
             }
         });
 
-        // B. EINHEITEN LOGIK
+        // UNIT LOGIK ("KI")
         this.state.units.forEach((unit) => {
-            let enemyFound = null;
+            let target = null;
+            let closestDist = 999;
 
-            // 1. Gegner suchen & Separation
+            // 1. SCAN: Suche nach Gegnern (für Angriff ODER Verfolgung)
             this.state.units.forEach((other) => {
                 if (unit === other) return;
+                
                 let dx = unit.x - other.x;
                 let dz = unit.z - other.z;
                 let dist = Math.sqrt(dx*dx + dz*dz);
 
+                // A. Separation (Nicht stapeln mit Freunden)
                 if (unit.ownerId === other.ownerId) {
                     if (dist < 0.8) { 
-                        let pushForce = 0.05; 
+                        let push = 0.05; 
                         if (dist > 0) {
-                            unit.x += (dx / dist) * pushForce;
-                            unit.z += (dz / dist) * pushForce;
+                            unit.x += (dx / dist) * push;
+                            unit.z += (dz / dist) * push;
                         } else {
-                            unit.x += (Math.random() - 0.5) * pushForce;
-                            unit.z += (Math.random() - 0.5) * pushForce;
+                            unit.x += (Math.random() - 0.5) * push;
+                            unit.z += (Math.random() - 0.5) * push;
                         }
                     }
-                } else {
-                    if (dist <= unit.attackRange) enemyFound = other;
+                } 
+                // B. Gegner finden
+                else {
+                    // Wir merken uns den NÄCHSTEN Gegner
+                    if (dist < closestDist) {
+                        closestDist = dist;
+                        target = other;
+                    }
                 }
             });
 
-            // 2. Kampf oder Lauf
-            if (enemyFound) {
+            // 2. ENTSCHEIDUNG: Kämpfen, Verfolgen oder Basis stürmen?
+            
+            // Sicht-Radius (Aggro Range): 6 Einheiten
+            // Angriffs-Radius: unit.attackRange
+            
+            if (target && closestDist <= unit.attackRange) {
+                // FALL 1: Gegner in Waffenreichweite -> KÄMPFEN
                 unit.isFighting = true;
-                enemyFound.hp -= (unit.damage * (deltaTime / 1000));
-                if (enemyFound.hp <= 0) this.state.units.delete(enemyFound.id);
-            } else {
+                target.hp -= (unit.damage * (deltaTime / 1000));
+                if (target.hp <= 0) this.state.units.delete(target.id);
+            
+            } else if (target && closestDist <= 6) {
+                // FALL 2: Gegner gesehen (aber zu weit weg) -> VERFOLGEN ("Aggro")
                 unit.isFighting = false;
-                if (unit.z < -0.5) unit.z += unit.speed;
-                else if (unit.z > 0.5) unit.z -= unit.speed;
+                
+                // Vektor zum Gegner berechnen
+                let dx = target.x - unit.x;
+                let dz = target.z - unit.z;
+                
+                // Normalisieren (damit wir nicht schneller werden)
+                let len = Math.sqrt(dx*dx + dz*dz);
+                dx /= len;
+                dz /= len;
+
+                // Bewegen
+                unit.x += dx * unit.speed;
+                unit.z += dz * unit.speed;
+
+            } else {
+                // FALL 3: Kein Gegner weit und breit -> STURM AUF DIE BASIS
+                unit.isFighting = false;
+                
+                // Wir laufen einfach geradeaus in unsere definierte 'direction'
+                unit.z += unit.speed * unit.direction;
+
+                // Kleiner "Drift" zurück zur Mitte der Lane (X=0), damit sie nicht am Rand kleben
+                // Wenn x > 0.5, geh leicht nach links. Wenn x < -0.5, geh leicht nach rechts.
+                if (unit.x > 2) unit.x -= 0.02;
+                if (unit.x < -2) unit.x += 0.02;
             }
 
-            // 3. Map Grenzen & BASESCHADEN (NEU!)
+            // 3. World Bounds & Base Damage
             if (unit.x < -6) unit.x = -6;
             if (unit.x > 6) unit.x = 6;
 
-            // Hat Einheit das Ende erreicht?
-            // "Oben" ist bei Z = -10 (Player 1), "Unten" ist bei Z = 10 (Player 2)
-            // Wenn Einheit bei > 9 ist -> Schaden an Player 2 (Unten)
-            if (unit.z > 9) {
-                this.damagePlayerAtPosition(10, 10); // 10 Schaden an Spieler bei Z=10
-                this.state.units.delete(unit.id); // Einheit opfert sich
-            }
-            // Wenn Einheit bei < -9 ist -> Schaden an Player 1 (Oben)
-            else if (unit.z < -9) {
-                this.damagePlayerAtPosition(-10, 10); // 10 Schaden an Spieler bei Z=-10
+            // Win Condition Check
+            if (unit.z > 11 || unit.z < -11) {
+                // Zähle Schaden, wenn sie tief in die Gegner-Zone eindringen
+                // Da direction 1 = nach unten (zu +10) und -1 = nach oben (zu -10)
+                let enemyBaseZ = (unit.direction === 1) ? 10 : -10;
+                this.damagePlayerAtPosition(enemyBaseZ, 10);
                 this.state.units.delete(unit.id);
             }
         });
@@ -162,17 +195,12 @@ class GameRoom extends Room {
 
     damagePlayerAtPosition(zPos, damage) {
         this.state.players.forEach((player, sessionId) => {
-            // Wir suchen den Spieler, der an dieser Base wohnt
-            // Toleranzbereich prüfen, da zPos exakt -10 oder 10 ist
-            if (Math.abs(player.baseZ - zPos) < 1) {
+            if (Math.abs(player.baseZ - zPos) < 2) {
                 player.health -= damage;
-                console.log(`Spieler ${sessionId} hat Schaden genommen! HP: ${player.health}`);
-                
+                console.log(`Base Treffer! Spieler ${sessionId} HP: ${player.health}`);
                 if (player.health <= 0) {
-                    // GAME OVER LOGIK (Simpel: Reset HP)
-                    console.log("GAME OVER für " + sessionId);
-                    player.health = 100; // Oder disconnecten / Reset Room
-                    // Hier könnte man später "broadcast('gameOver')" senden
+                    console.log("GAME OVER");
+                    player.health = 100; 
                 }
             }
         });
@@ -183,8 +211,14 @@ class GameRoom extends Room {
         unit.id = "u_" + Date.now() + "_" + Math.random();
         unit.type = building.type;
         unit.x = building.x;
+        // Spawne leicht vor dem Gebäude
         unit.z = (building.z < 0) ? building.z + 2 : building.z - 2;
         unit.ownerId = building.ownerId;
+
+        // RICHTUNG BESTIMMEN
+        // Wenn Gebäude oben (z < 0) -> Lauf nach unten (+1)
+        // Wenn Gebäude unten (z > 0) -> Lauf nach oben (-1)
+        unit.direction = (building.z < 0) ? 1 : -1;
 
         if (unit.type === "rekrut") { unit.maxHp = 100; unit.hp = 100; unit.damage = 10; unit.speed = 0.1; }
         else if (unit.type === "bogenschuetze") { unit.maxHp = 60; unit.hp = 60; unit.damage = 20; unit.speed = 0.1; unit.attackRange = 4; }
